@@ -1,0 +1,28 @@
+name: Release
+
+# Publish a GitHub Release with prebuilt, fully-static (musl) Linux binaries when a
+# version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# musl binaries are statically linked (no libc dependency), so they run on any
+# x86_64 Linux regardless of the host's glibc version.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: 0xmichalis/repo-tooling/.github/workflows/rust-binary-release.yml@fa6609fe11a40dab9da1e5ea3efd5c02da6c1504
+    permissions:
+      contents: write
+    with:
+      binary: rysk-mcp
+      tag: ${{ inputs.tag || github.ref_name }}

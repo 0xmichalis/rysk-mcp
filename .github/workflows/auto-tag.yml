@@ -1,0 +1,31 @@
+name: Auto Tag on Version Bump
+
+# GITHUB_TOKEN tag creation does not trigger a tag-push release. The helper
+# dispatches release.yml explicitly and can resume a failed dispatch.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  auto-tag:
+    name: Detect version bumps and create tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: 0xmichalis/repo-tooling/actions/cargo-tag@ed1b0c7db2764f49a7144c7eff80351a90b65ded # v1.0.0
+        with:
+          before-sha: ${{ github.event.before }}
+          token: ${{ github.token }}
