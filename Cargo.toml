@@ -1,0 +1,30 @@
+[package]
+name = "rysk-mcp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "MCP server for option sellers on Rysk V12: option chains, live quotes, positions, settlement prices"
+authors = ["Michalis Kargakis <kargakis@protonmail.com>"]
+readme = "README.md"
+keywords = ["mcp", "rysk", "options", "defi", "finance"]
+categories = ["api-bindings"]
+
+[dependencies]
+dotenvy = "0.15.7"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "charset"] }
+rmcp = { version = "3.9.0", features = ["schemars", "transport-io"] }
+schemars = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+wiremock = "0.6.5"
+
+[profile.release]
+strip = true
+lto = true
