@@ -1,8 +1,9 @@
 //! MCP server exposing the Rysk tools over stdio (via `rmcp`).
 //!
-//! Five tools for an option seller: `rysk_assets`, `rysk_option_chain`,
-//! `rysk_quote`, `rysk_positions` and `rysk_settlement_prices`. None of them
-//! signs anything, so none can trade or move funds.
+//! Six tools for an option seller: `rysk_assets`, `rysk_option_chain`,
+//! `rysk_quote`, `rysk_propose_sale`, `rysk_positions` and `rysk_settlement_prices`.
+//! None of them signs anything, so none can trade or move funds: a proposed sale
+//! is signed by the user in their own wallet.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -69,6 +70,28 @@ pub struct QuoteArgs {
     pub quantity: f64,
     /// Collateral symbol or address. Defaults to the first one rysk_assets lists.
     pub collateral: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ProposeSaleArgs {
+    /// Asset symbol ("WHYPE", "UBTC", "WETH") or address. See rysk_assets.
+    pub asset: String,
+    /// Chain of the asset, needed when its symbol exists on several chains.
+    pub chain_id: Option<u64>,
+    /// "call" to sell a covered call, "put" to sell a cash-secured put.
+    pub option_type: OptionType,
+    /// Strike in USD, e.g. 75 or 0.85. Must be a strike rysk_option_chain lists.
+    pub strike: f64,
+    /// Expiry date YYYY-MM-DD (UTC), or the expiry_timestamp from rysk_option_chain.
+    pub expiry: String,
+    /// Number of contracts in units of the asset (e.g. 25 WHYPE): a multiple of the
+    /// asset's min_trade_size, at most its max_trade_size.
+    pub quantity: f64,
+    /// Collateral symbol or address. Defaults to the first one rysk_assets lists.
+    pub collateral: Option<String>,
+    /// Lowest APY in percent (the figure the Rysk app labels APR) the user should
+    /// accept when signing, e.g. 120.
+    pub min_apy: Option<f64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -164,6 +187,39 @@ impl RyskServer {
     }
 
     #[tool(
+        name = "rysk_propose_sale",
+        description = "Propose an option sale for the user to sign in their own wallet. \
+                       Gets a live maker quote, the collateral the sale locks, the approval \
+                       spender, and a Rysk app link with the asset, collateral, option type \
+                       and expiry preselected, plus the steps to finish there. Send the user \
+                       app_url, the quote and the steps. You cannot sign or submit the sale; \
+                       the quote expires within about a minute and the app requests a fresh \
+                       one, so pass min_apy to tell the user the lowest APY to accept.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn propose_sale(
+        &self,
+        Parameters(args): Parameters<ProposeSaleArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let request = QuoteRequest {
+            asset: args.asset,
+            chain_id: args.chain_id,
+            option_type: args.option_type,
+            strike: args.strike,
+            expiry: args.expiry,
+            quantity: args.quantity,
+            collateral: args.collateral,
+        };
+        Ok(to_result(
+            self.client.propose_sale(&request, args.min_apy).await,
+        ))
+    }
+
+    #[tool(
         name = "rysk_positions",
         description = "List a wallet's Rysk option positions, latest expiry first: asset, \
                        call/put, strike, expiry, quantity, premium earned, APR at entry and \
@@ -228,9 +284,11 @@ impl ServerHandler for RyskServer {
                 "Rysk V12 (rysk.finance) for an option seller: covered calls and \
                  cash-secured puts for upfront premium. Typical flow: `rysk_assets` for \
                  symbols, trade sizes and collateral; `rysk_option_chain` to scan strikes and \
-                 indicative APYs; `rysk_quote` for a live maker price; `rysk_positions` to \
-                 track a wallet; `rysk_settlement_prices` to check how expiries settled. \
-                 Prices and premiums are in USD stablecoins. Nothing here can trade.",
+                 indicative APYs; `rysk_quote` for a live maker price; `rysk_propose_sale` \
+                 to hand the user a sale to sign in their own wallet; `rysk_positions` to \
+                 track a wallet and confirm a sale filled; `rysk_settlement_prices` to check \
+                 how expiries settled. Prices and premiums are in USD stablecoins. Nothing \
+                 here can trade or sign.",
             )
     }
 }

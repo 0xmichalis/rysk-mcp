@@ -111,6 +111,31 @@ pub struct Quote {
     pub valid_until: String,
 }
 
+/// A sale for the user to review and sign in their own wallet. Building one signs
+/// and submits nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SaleProposal {
+    /// The live quote when the proposal was made. It expires within about a minute;
+    /// the Rysk app requests a fresh one when the user opens `app_url`.
+    pub quote: Quote,
+    /// Collateral the sale locks until expiry, in `quote.collateral`: the quantity for
+    /// a call, quantity × strike for a put.
+    pub collateral_amount: f64,
+    /// Rysk's MarginPool, the spender of the collateral approval the wallet asks for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_spender: Option<String>,
+    /// Lowest APY, in percent, the user should accept when signing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_apy: Option<f64>,
+    /// Whether the proposal-time quote meets `min_apy`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meets_min_apy: Option<bool>,
+    /// Rysk app page with the chain, asset, collateral, option type and expiry preselected.
+    pub app_url: String,
+    /// What the user does on that page, in order.
+    pub steps: Vec<String>,
+}
+
 /// An option position of a wallet.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Position {

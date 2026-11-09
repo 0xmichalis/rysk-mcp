@@ -4,7 +4,8 @@
 //! Public HTTP endpoints serve assets, products, the indicative option chain and
 //! settlement prices. The taker websocket answers JSON-RPC calls for a wallet's
 //! positions and for live RFQ quotes. Nothing here signs or trades: an RFQ only
-//! asks makers for a price, and acting on it would need a signed confirmation.
+//! asks makers for a price, and acting on it needs the user's wallet to approve the
+//! collateral and sign Rysk's confirmation, which a [`SaleProposal`] links them to.
 
 mod api;
 pub mod model;
@@ -20,8 +21,8 @@ use api::{
     Assets, Inventory, RawAsset, RawExpiryPrice, RawPosition, RawProduct, RawQuote, RpcResponse,
 };
 pub use model::{
-    Asset, OptionChain, OptionRow, OptionType, Position, ProductRef, Quote, SettlementPrice,
-    SettlementPrices, TokenAmount,
+    Asset, OptionChain, OptionRow, OptionType, Position, ProductRef, Quote, SaleProposal,
+    SettlementPrice, SettlementPrices, TokenAmount,
 };
 use transport::Transport;
 use units::{PRICE_DECIMALS, WAD, from_base_units, parse_utc_date, to_base_units, utc_date};
@@ -31,8 +32,18 @@ pub const API_URL: &str = "https://v12.rysk.finance";
 /// JSON-RPC websocket the Rysk web app uses for takers.
 pub const TAKER_WS_URL: &str = "wss://v12.rysk.finance/taker";
 
+/// The Rysk web app's page for selling an option.
+const APP_EARN_URL: &str = "https://app.rysk.finance/earn";
+
 /// RFQs go out without a wallet, so they name the zero address as taker.
 const ANONYMOUS_TAKER: &str = "0x0000000000000000000000000000000000000000";
+
+/// Rysk's MarginPool per chain, as the Rysk web app configures it. A sale moves the
+/// collateral from the seller's wallet into it, so it is the approval's spender.
+const MARGIN_POOLS: &[(u64, &str)] = &[
+    (1, "0x684404f2aebad87a6803f13741b1d638bfe2c671"),
+    (999, "0x24a44f1dc25540c62c1196ffc297dfc951c91ab4"),
+];
 
 /// Strike and premium stablecoins per chain, as the Rysk web app lists them. They
 /// are not in `/api/assets`; all of them have 6 decimals on-chain.
@@ -240,6 +251,106 @@ impl<T: Transport> RyskClient<T> {
     /// Ask Rysk's makers for a live price to sell an option. This starts an RFQ
     /// auction and returns the best quote; it does not trade.
     pub async fn quote(&self, request: &QuoteRequest) -> Result<Quote, RyskError> {
+        self.live_quote(request).await.map(|(quote, _)| quote)
+    }
+
+    /// Prepare a sale for the user to sign in their own wallet: a live quote, the
+    /// collateral it locks, and a Rysk app link with the option preselected.
+    pub async fn propose_sale(
+        &self,
+        request: &QuoteRequest,
+        min_apy: Option<f64>,
+    ) -> Result<SaleProposal, RyskError> {
+        let (quote, strike_asset) = self.live_quote(request).await?;
+
+        let is_put = quote.option_type.is_put();
+        let strike = quote.strike.unwrap_or(request.strike);
+        let quantity = quote.quantity.unwrap_or(request.quantity);
+        let collateral_amount = if is_put {
+            round(quantity * strike, STABLECOIN_DECIMALS as i32)
+        } else {
+            quantity
+        };
+        let approval_spender = MARGIN_POOLS
+            .iter()
+            .find(|(chain, _)| *chain == quote.chain_id)
+            .map(|(_, pool)| pool.to_string());
+        let meets_min_apy = min_apy.map(|min| quote.apy.is_some_and(|apy| apy >= min));
+
+        let app_url = reqwest::Url::parse_with_params(
+            APP_EARN_URL,
+            &[
+                ("chainId", quote.chain_id.to_string()),
+                ("asset", quote.asset.clone()),
+                ("collateral", quote.collateral.clone()),
+                ("strike", strike_asset),
+                ("type", quote.option_type.as_str().to_string()),
+                ("expiry", quote.expiry_timestamp.to_string()),
+            ],
+        )
+        .map_err(|e| RyskError::Parse(format!("Rysk app link: {e}")))?
+        .to_string();
+
+        // The app asks for the asset quantity of a call but the collateral deposit of a put.
+        let size = if is_put {
+            format!("deposit {collateral_amount} {}", quote.collateral)
+        } else {
+            format!("enter {quantity} {}", quote.collateral)
+        };
+        // The app labels Rysk's `apy` figure APR, so the steps match the screen.
+        let price = match (quote.total_premium, quote.apy) {
+            (Some(premium), Some(apy)) => {
+                format!("{premium} {} at {apy}% APR", quote.premium_asset)
+            }
+            _ => "no price".to_string(),
+        };
+        let accept = match min_apy {
+            Some(min) => format!(
+                "Accept only if the app's live quote shows at least {min}% APR; at proposal time \
+                 it was {price}."
+            ),
+            None => format!(
+                "At proposal time the quote was {price}; the app shows a fresh one before you sign."
+            ),
+        };
+        let spender = approval_spender
+            .as_deref()
+            .map(|pool| format!(" to Rysk's MarginPool {pool}"))
+            .unwrap_or_default();
+        let steps = vec![
+            "Open app_url in a browser with your wallet (the Rabby extension, or Rabby Mobile's \
+             built-in browser)."
+                .to_string(),
+            format!(
+                "Check that {} {} with {} collateral, expiring {}, is selected; pick strike {strike} \
+                 and {size}.",
+                quote.asset,
+                quote.option_type.as_str(),
+                quote.collateral,
+                quote.expiry,
+            ),
+            accept,
+            format!(
+                "Your wallet asks to approve {collateral_amount} {}{spender} if the allowance is \
+                 short, then to sign a Rysk Confirmation message. Rysk submits the trade and the \
+                 collateral stays locked until expiry.",
+                quote.collateral
+            ),
+        ];
+
+        Ok(SaleProposal {
+            collateral_amount,
+            approval_spender,
+            min_apy,
+            meets_min_apy,
+            app_url,
+            steps,
+            quote,
+        })
+    }
+
+    /// Run an RFQ and return the best quote with the symbol of its strike asset.
+    async fn live_quote(&self, request: &QuoteRequest) -> Result<(Quote, String), RyskError> {
         let strike = to_base_units(request.strike, PRICE_DECIMALS)
             .map_err(|e| RyskError::Invalid(format!("strike {e}")))?;
         let quantity = to_base_units(request.quantity, WAD)
@@ -271,7 +382,8 @@ impl<T: Transport> RyskClient<T> {
             .unwrap_or(&quote.usd);
         let price = from_base_units(&quote.price, WAD);
         let quantity = from_base_units(&quote.quantity, WAD);
-        Ok(Quote {
+        let strike_asset = tokens.symbol(asset.chain_id, &quote.usd);
+        let quote = Quote {
             asset: asset.symbol.clone(),
             chain_id: asset.chain_id,
             option_type: request.option_type,
@@ -286,7 +398,8 @@ impl<T: Transport> RyskClient<T> {
             collateral: tokens.symbol(asset.chain_id, &quote.collateral_asset),
             maker: quote.maker.to_lowercase(),
             valid_until: units::utc_datetime(quote.valid_until),
-        })
+        };
+        Ok((quote, strike_asset))
     }
 
     /// List the option positions of a wallet, latest expiry first.

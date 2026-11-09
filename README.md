@@ -2,8 +2,8 @@
 
 MCP server for option sellers on [Rysk V12](https://rysk.finance): scan the option chain for
 covered calls and cash-secured puts, get live maker quotes, and track a wallet's positions and
-how they settled. Written in Rust, served over stdio. No credentials and no keys — it cannot
-trade, sign, or move funds.
+how they settled, and propose sales for you to sign in your own wallet. Written in Rust, served
+over stdio. No credentials and no keys — it cannot trade, sign, or move funds.
 
 ## Tools
 
@@ -12,6 +12,7 @@ trade, sign, or move funds.
 | `rysk_assets` | Assets per chain with USD price, min/max trade size, and the collateral accepted for calls and puts |
 | `rysk_option_chain` | Indicative chain for an underlying (`HYPE`, `BTC`, …): expiries, strikes, delta, seller APY; filter by type, expiry, strike range, min APY, max \|delta\| |
 | `rysk_quote` | Live best maker quote for selling an option: premium per contract, total premium, APY, validity |
+| `rysk_propose_sale` | A sale for you to sign: live quote, collateral to lock, approval spender, a Rysk app link with the option preselected, and the steps to finish it |
 | `rysk_positions` | A wallet's positions: strike, expiry, quantity, premium, APR, status, and for settled ones whether they were exercised, with the payout or returned collateral |
 | `rysk_settlement_prices` | The settlement price of each expiry of an asset |
 
@@ -22,6 +23,17 @@ asset. Payouts keep the exact on-chain `base_units` alongside.
 web app does while you pick a strike. It does not trade; acting on a quote needs a wallet
 signature this server never makes. Rysk only quotes the strikes `rysk_option_chain` lists,
 in multiples of the asset's `min_trade_size`.
+
+### Proposing a sale
+
+A Rysk sale is not a transaction you broadcast. Your wallet approves the collateral to Rysk's
+MarginPool, then signs an EIP-712 `Confirmation` over the maker's quote; Rysk's relayer submits
+the trade. `rysk_propose_sale` prepares that for you without signing anything: it returns a
+live quote, the collateral the sale locks, the approval spender, and a link to the Rysk app
+with the chain, asset, collateral, option type and expiry preselected. The app does not take a
+strike price or size from the link, so the steps name the ones to pick. Maker quotes expire
+within about a minute and the app fetches a fresh one, so pass `min_apy` to state the lowest
+APY to accept (the figure the app labels APR). After you sign, `rysk_positions` shows the new position.
 
 ### Data sources
 
@@ -64,7 +76,7 @@ mcp_servers:
     connect_timeout: 60
 ```
 
-Verify: `hermes mcp test rysk` should connect and list the five tools.
+Verify: `hermes mcp test rysk` should connect and list the six tools.
 
 ## Development
 
