@@ -1,11 +1,12 @@
 name: Release
 
-# Publish a GitHub Release with prebuilt, fully-static (musl) Linux binaries when a
-# version tag is pushed:
+# Publish a GitHub Release with prebuilt binaries when a version tag is pushed:
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# musl binaries are statically linked (no libc dependency), so they run on any
-# x86_64 Linux regardless of the host's glibc version.
+# Linux is built for musl, so the binary is statically linked (no libc dependency)
+# and runs on any x86_64 Linux regardless of the host's glibc version. macOS is
+# built for both architectures; Apple does not support static libc linking, but
+# the binaries need nothing beyond the system libraries every Mac has.
 on:
   push:
     tags: ["v*"]
@@ -26,3 +27,9 @@ jobs:
     with:
       binary: rysk-mcp
       tag: ${{ inputs.tag || github.ref_name }}
+      targets: |
+        [
+          {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","builder":"cross"},
+          {"target":"aarch64-apple-darwin","os":"macos-latest","builder":"cargo"},
+          {"target":"x86_64-apple-darwin","os":"macos-latest","builder":"cargo"}
+        ]
