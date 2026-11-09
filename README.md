@@ -81,7 +81,7 @@ public; no private key is ever needed.
 ```yaml
 mcp_servers:
   rysk:
-    command: /home/you/.local/bin/rysk-mcp
+    command: /home/you/.local/bin/rysk-mcp  # macOS: /Users/you/.local/bin/rysk-mcp
     args: []
     env:
       RYSK_ADDRESS: "0xYourWallet"  # optional
