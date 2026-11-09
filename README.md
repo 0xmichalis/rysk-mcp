@@ -44,14 +44,27 @@ the JSON-RPC websocket at `wss://v12.rysk.finance/taker`. Rysk can change them w
 
 ## Install
 
-Prebuilt **static** Linux binaries are attached to each [GitHub Release](../../releases) —
-built for `x86_64-unknown-linux-musl`, so they link no libc and run on any x86_64 Linux
-regardless of the host's glibc version.
+Prebuilt binaries are attached to each [GitHub Release](../../releases):
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86_64 | `rysk-mcp-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz` |
+| macOS Apple Silicon | `rysk-mcp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `rysk-mcp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+
+The Linux build is **static** (musl), so it links no libc and runs on any x86_64 Linux regardless
+of the host's glibc version.
 
 ```sh
-tar xzf rysk-mcp-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz
-install rysk-mcp-vX.Y.Z-x86_64-unknown-linux-musl/rysk-mcp ~/.local/bin/
+target=x86_64-unknown-linux-musl   # or aarch64-apple-darwin, x86_64-apple-darwin
+tar xzf "rysk-mcp-vX.Y.Z-${target}.tar.gz"
+mkdir -p ~/.local/bin
+install "rysk-mcp-vX.Y.Z-${target}/rysk-mcp" ~/.local/bin/
 ```
+
+Each asset ships with a `.sha256` alongside it. On macOS the binary is unsigned, so Gatekeeper
+will quarantine a downloaded copy — clear it with
+`xattr -d com.apple.quarantine ~/.local/bin/rysk-mcp`.
 
 Or build from source: `cargo build --release` (a static musl build uses
 [`cross`](https://github.com/cross-rs/cross): `cross build --release --target x86_64-unknown-linux-musl`).
@@ -68,7 +81,7 @@ public; no private key is ever needed.
 ```yaml
 mcp_servers:
   rysk:
-    command: /home/you/.local/bin/rysk-mcp
+    command: /home/you/.local/bin/rysk-mcp  # macOS: /Users/you/.local/bin/rysk-mcp
     args: []
     env:
       RYSK_ADDRESS: "0xYourWallet"  # optional
