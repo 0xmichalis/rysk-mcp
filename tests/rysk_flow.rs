@@ -663,6 +663,141 @@ async fn quote_surfaces_rysk_rejections() {
     assert_eq!(err, RyskError::Api("invalid strike (code -32603)".into()));
 }
 
+// --- propose_sale ---
+
+const PUT_QUOTE: &str = r#"{"jsonrpc":"2.0","id":"request","result":{"assetAddress":"0x5555555555555555555555555555555555555555",
+  "chainId":999,"isPut":true,"strike":"7000000000","expiry":1794556800,"maker":"0x66799BC69D7A7DAAF50B6AA03CD5C6A2DF1A9454",
+  "nonce":"1794223645950579208","price":"640000000000000000","quantity":"25000000000000000000","isTakerBuy":false,
+  "signature":"0xeb7f","usd":"0xb88339cb7199b77e23db6e890353e22632ba630f","collateralAsset":"0xb88339cb7199b77e23db6e890353e22632ba630f",
+  "validUntil":1794223711,"premiumAsset":"","apy":85.123}}"#;
+
+const HYPEREVM_MARGIN_POOL: &str = "0x24a44f1dc25540c62c1196ffc297dfc951c91ab4";
+
+#[tokio::test]
+async fn propose_sale_links_a_covered_call_to_the_rysk_app() {
+    let transport = FakeTransport::new().rpc("request", QUOTE);
+    let client = RyskClient::new(&transport);
+
+    let proposal = client
+        .propose_sale(&whype_call_quote(), None)
+        .await
+        .unwrap();
+
+    // The same anonymous RFQ as rysk_quote: proposing signs nothing.
+    let calls = transport.rpc_calls();
+    let [(_, _, request)] = calls.as_slice() else {
+        panic!("expected one RPC call, got {calls:?}");
+    };
+    assert_eq!(
+        request["params"]["taker"],
+        "0x0000000000000000000000000000000000000000"
+    );
+
+    assert_eq!(proposal.quote.apy, Some(142.44));
+    assert_eq!(proposal.collateral_amount, 25.0);
+    assert_eq!(
+        proposal.approval_spender.as_deref(),
+        Some(HYPEREVM_MARGIN_POOL)
+    );
+    assert_eq!(proposal.min_apy, None);
+    assert_eq!(proposal.meets_min_apy, None);
+    assert_eq!(
+        proposal.app_url,
+        "https://app.rysk.finance/earn?chainId=999&asset=WHYPE&collateral=WHYPE&strike=USDC&type=call&expiry=1794556800"
+    );
+    assert_eq!(
+        proposal.steps,
+        [
+            "Open app_url in a browser with your wallet (the Rabby extension, or Rabby Mobile's \
+             built-in browser).",
+            "Check that WHYPE call with WHYPE collateral, expiring 2026-11-13, is selected; pick \
+             strike 75 and enter 25 WHYPE.",
+            "At proposal time the quote was 27.665302 USDC at 142.44% APR; the app shows a fresh \
+             one before you sign.",
+            "Your wallet asks to approve 25 WHYPE to Rysk's MarginPool \
+             0x24a44f1dc25540c62c1196ffc297dfc951c91ab4 if the allowance is short, then to sign a \
+             Rysk Confirmation message. Rysk submits the trade and the collateral stays locked \
+             until expiry.",
+        ]
+    );
+
+    let json = serde_json::to_value(&proposal).unwrap();
+    assert!(json.get("min_apy").is_none(), "json: {json}");
+    assert!(json.get("meets_min_apy").is_none(), "json: {json}");
+}
+
+#[tokio::test]
+async fn propose_sale_asks_for_the_put_collateral_deposit() {
+    let transport = FakeTransport::new().rpc("request", PUT_QUOTE);
+    let client = RyskClient::new(&transport);
+
+    let proposal = client
+        .propose_sale(
+            &QuoteRequest {
+                option_type: OptionType::Put,
+                strike: 70.0,
+                collateral: Some("USDC".into()),
+                ..whype_call_quote()
+            },
+            Some(80.0),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(proposal.collateral_amount, 1750.0);
+    assert_eq!(proposal.meets_min_apy, Some(true));
+    assert_eq!(
+        proposal.app_url,
+        "https://app.rysk.finance/earn?chainId=999&asset=WHYPE&collateral=USDC&strike=USDC&type=put&expiry=1794556800"
+    );
+    assert_eq!(
+        proposal.steps[1],
+        "Check that WHYPE put with USDC collateral, expiring 2026-11-13, is selected; pick strike \
+         70 and deposit 1750 USDC."
+    );
+    assert_eq!(
+        proposal.steps[2],
+        "Accept only if the app's live quote shows at least 80% APR; at proposal time it was 16 \
+         USDC at 85.12% APR."
+    );
+    assert!(proposal.steps[3].starts_with("Your wallet asks to approve 1750 USDC to Rysk's"));
+}
+
+#[tokio::test]
+async fn propose_sale_flags_a_quote_below_min_apy_and_accepts_one_at_it() {
+    let transport = FakeTransport::new().rpc("request", QUOTE);
+    let client = RyskClient::new(&transport);
+
+    let below = client
+        .propose_sale(&whype_call_quote(), Some(142.45))
+        .await
+        .unwrap();
+    let at = client
+        .propose_sale(&whype_call_quote(), Some(142.44))
+        .await
+        .unwrap();
+
+    assert_eq!(below.meets_min_apy, Some(false));
+    assert_eq!(below.min_apy, Some(142.45));
+    assert_eq!(at.meets_min_apy, Some(true));
+}
+
+#[tokio::test]
+async fn propose_sale_surfaces_rysk_rejections() {
+    let transport = FakeTransport::new().rpc(
+        "request",
+        r#"{"jsonrpc":"2.0","id":"request","error":{"code":-32603,"message":"invalid strike"}}"#,
+    );
+    let client = RyskClient::new(&transport);
+
+    let err = client
+        .propose_sale(&whype_call_quote(), Some(100.0))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err, RyskError::Api("invalid strike (code -32603)".into()));
+}
+
 // --- positions ---
 
 #[tokio::test]
