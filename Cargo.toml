@@ -1,6 +1,6 @@
 [package]
 name = "rysk-mcp"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "MCP server for option sellers on Rysk V12: option chains, live quotes, positions, settlement prices"
