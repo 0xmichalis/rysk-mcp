@@ -1,6 +1,7 @@
 //! End-to-end flow tests for the Rysk client over a fake transport — no network.
 //! Fixtures are trimmed copies of real `v12.rysk.finance` responses.
 
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -265,10 +266,7 @@ async fn malformed_bodies_are_parse_errors() {
 
     let err = client.assets(None, None).await.unwrap_err();
 
-    assert!(
-        matches!(err, RyskError::Parse(ref m) if m.starts_with("/api/assets:")),
-        "{err:?}"
-    );
+    assert_matches!(err, RyskError::Parse(ref m) if m.starts_with("/api/assets:"));
 }
 
 // --- option chain ---
@@ -1021,10 +1019,7 @@ async fn settlement_prices_reject_unreadable_expiries() {
 
     let err = client.settlement_prices("WHYPE", None).await.unwrap_err();
 
-    assert!(
-        matches!(err, RyskError::Parse(ref m) if m.contains("\"soon\"")),
-        "{err:?}"
-    );
+    assert_matches!(err, RyskError::Parse(ref m) if m.contains("\"soon\""));
 }
 
 #[tokio::test]
