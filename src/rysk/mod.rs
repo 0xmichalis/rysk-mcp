@@ -315,8 +315,7 @@ impl<T: Transport> RyskClient<T> {
         };
         let spender = approval_spender
             .as_deref()
-            .map(|pool| format!(" to Rysk's MarginPool {pool}"))
-            .unwrap_or_default();
+            .map_or_default(|pool| format!(" to Rysk's MarginPool {pool}"));
         let steps = vec![
             "Open app_url in a browser with your wallet (the Rabby extension, or Rabby Mobile's \
              built-in browser)."
@@ -751,9 +750,7 @@ fn resolve_asset<'a>(
             by_symbol
         }
     };
-    let on_chain = chain_id
-        .map(|c| format!(" on chain {c}"))
-        .unwrap_or_default();
+    let on_chain = chain_id.map_or_default(|c| format!(" on chain {c}"));
 
     match found.as_slice() {
         [asset] => Ok(asset),

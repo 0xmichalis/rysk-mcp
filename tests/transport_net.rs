@@ -88,8 +88,7 @@ where
                 *ua.lock().unwrap() = request
                     .headers()
                     .get("user-agent")
-                    .map(|v| v.to_str().unwrap().to_string())
-                    .unwrap_or_default();
+                    .map_or_default(|v| v.to_str().unwrap().to_string());
                 Ok(response)
             },
         )
