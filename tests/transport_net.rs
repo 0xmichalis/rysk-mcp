@@ -66,6 +66,20 @@ async fn get_errors_truncate_long_bodies() {
     );
 }
 
+#[tokio::test]
+async fn get_request_failures_omit_credentials_in_urls() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sentinel = "sentinel-secret-in-query";
+    let url = format!("http://{}/?key={sentinel}", listener.local_addr().unwrap());
+    drop(listener);
+
+    let error = NetTransport::new().unwrap().get(&url).await.unwrap_err();
+
+    assert!(error.0.starts_with("request failed:"), "{error}");
+    assert!(!error.0.contains(sentinel));
+    assert!(!format!("{error:?}").contains(sentinel));
+}
+
 /// Accept one websocket client, record its request and user agent, then run `script`.
 // tungstenite fixes the handshake callback's large `Err` type; it is not ours to shrink.
 #[allow(clippy::result_large_err)]
@@ -157,6 +171,29 @@ async fn rpc_fails_when_the_server_closes_without_answering() {
         .unwrap_err();
 
     assert_eq!(err.to_string(), "websocket closed before Rysk answered");
+}
+
+#[tokio::test]
+async fn rpc_stops_after_a_finite_number_of_unrelated_messages() {
+    let (url, _) = serve_once(|mut socket| async move {
+        let message = Message::text(r#"{"jsonrpc":"2.0","method":"inventory"}"#);
+        for _ in 0..4096 {
+            socket.feed(message.clone()).await.unwrap();
+        }
+        socket.flush().await.unwrap();
+    })
+    .await;
+
+    let error = NetTransport::new()
+        .unwrap()
+        .rpc(&url, "positions", "{}")
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.0,
+        "websocket received 4096 messages before Rysk answered"
+    );
 }
 
 #[tokio::test]

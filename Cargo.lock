@@ -1327,6 +1327,7 @@ dependencies = [
  "cargo-husky",
  "dotenvy",
  "futures-util",
+ "http-body-util",
  "reqwest",
  "rmcp",
  "schemars",

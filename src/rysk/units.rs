@@ -10,17 +10,19 @@
 pub const WAD: u32 = 18;
 /// Decimals of RFQ strikes and settlement prices.
 pub const PRICE_DECIMALS: u32 = 8;
+const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Interpret an integer string as a fixed-point number with `decimals` places.
-/// Returns `None` when `raw` is not a non-negative integer.
+/// Returns `None` when `raw` is not a non-negative integer or exceeds the range of `f64`.
 pub fn from_base_units(raw: &str, decimals: u32) -> Option<f64> {
     if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let decimals = decimals as usize;
-    let padded = format!("{raw:0>width$}", width = decimals + 1);
-    let (int, frac) = padded.split_at(padded.len() - decimals);
-    format!("{int}.{frac}").parse().ok()
+    // A provider-supplied decimal count must not determine the allocation size.
+    format!("{raw}e-{decimals}")
+        .parse::<f64>()
+        .ok()
+        .filter(|amount| amount.is_finite())
 }
 
 /// Scale a positive number to an integer string with `decimals` places, exactly as
@@ -43,13 +45,18 @@ pub fn to_base_units(value: f64, decimals: u32) -> Result<String, String> {
 
 /// Format a unix timestamp (seconds) as a UTC date, `YYYY-MM-DD`.
 pub fn utc_date(timestamp: i64) -> String {
-    let (y, m, d) = civil_from_days(timestamp.div_euclid(86_400));
+    let (y, m, d) = civil_from_days(utc_day(timestamp));
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// UTC days since the Unix epoch, including partial days before the epoch.
+pub(super) fn utc_day(timestamp: i64) -> i64 {
+    timestamp.div_euclid(SECONDS_PER_DAY)
 }
 
 /// Format a unix timestamp (seconds) as an RFC 3339 UTC datetime.
 pub fn utc_datetime(timestamp: i64) -> String {
-    let secs = timestamp.rem_euclid(86_400);
+    let secs = timestamp.rem_euclid(SECONDS_PER_DAY);
     format!(
         "{}T{:02}:{:02}:{:02}Z",
         utc_date(timestamp),
@@ -68,7 +75,8 @@ pub fn parse_utc_date(date: &str) -> Option<i64> {
     if !(1..=12).contains(&m) || d == 0 || d > days_in_month(y, m) {
         return None;
     }
-    Some(days_from_civil(y, m, d) * 86_400)
+    // The input year can fit in i64 even when its Unix timestamp cannot.
+    i64::try_from(days_from_civil(i128::from(y), m, d) * i128::from(SECONDS_PER_DAY)).ok()
 }
 
 fn days_in_month(y: i64, m: u32) -> u32 {
@@ -95,12 +103,12 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+fn days_from_civil(y: i128, m: u32, d: u32) -> i128 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let mp = i64::from(if m > 2 { m - 3 } else { m + 9 });
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let mp = i128::from(if m > 2 { m - 3 } else { m + 9 });
+    let doy = (153 * mp + 2) / 5 + i128::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
@@ -131,6 +139,13 @@ mod tests {
         assert_eq!(from_base_units("-1", 18), None);
         assert_eq!(from_base_units("1.5", 18), None);
         assert_eq!(from_base_units("0x10", 18), None);
+    }
+
+    #[test]
+    fn base_units_handle_extreme_values_and_scales() {
+        assert_eq!(from_base_units("1", 255), Some(1e-255));
+        assert_eq!(from_base_units("1", u32::MAX), Some(0.0));
+        assert_eq!(from_base_units(&"9".repeat(310), 0), None);
     }
 
     #[test]
@@ -176,6 +191,14 @@ mod tests {
         assert_eq!(parse_utc_date("2026-13-01"), None);
         assert_eq!(parse_utc_date("2026-11"), None);
         assert_eq!(parse_utc_date("13NOV26"), None);
+    }
+
+    #[test]
+    fn dates_outside_the_unix_timestamp_range_are_rejected() {
+        assert_eq!(parse_utc_date("9223372036854775807-01-01"), None);
+        let last_date = utc_date(i64::MAX);
+        assert_eq!(parse_utc_date(&last_date), Some(i64::MAX - 55_807));
+        assert_eq!(parse_utc_date("292277026596-12-05"), None);
     }
 
     #[test]
