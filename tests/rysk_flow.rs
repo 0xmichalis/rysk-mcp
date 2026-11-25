@@ -649,6 +649,64 @@ async fn quote_rejects_strikes_finer_than_rysk_supports_before_any_request() {
 }
 
 #[tokio::test]
+async fn quote_rejects_invalid_dates_before_any_request() {
+    let transport = FakeTransport::new();
+    let client = RyskClient::new(&transport);
+
+    for expiry in ["2026-02-29", "9223372036854775807-01-01"] {
+        let err = client
+            .quote(&QuoteRequest {
+                expiry: expiry.into(),
+                ..whype_call_quote()
+            })
+            .await
+            .unwrap_err();
+
+        assert!(invalid_message(err).contains("expiry must be YYYY-MM-DD or a unix timestamp"));
+    }
+    assert!(transport.get_calls().is_empty());
+    assert!(transport.rpc_calls().is_empty());
+}
+
+#[tokio::test]
+async fn expiry_lookup_ignores_an_extreme_provider_timestamp_on_another_day() {
+    let mut inventory: Value = serde_json::from_str(INVENTORY).unwrap();
+    let hype = &mut inventory["HYPE"];
+    hype["expiries"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!(i64::MIN));
+    hype["combinations"]["65.500000-1794556800"]["expiration_timestamp"] = json!(i64::MIN);
+    let transport = FakeTransport::new()
+        .get("/api/inventory", &inventory.to_string())
+        .rpc("request", QUOTE);
+    let client = RyskClient::new(&transport);
+
+    let quote = client.quote(&whype_call_quote()).await.unwrap();
+    assert_eq!(quote.expiry_timestamp, 1_794_556_800);
+    assert_eq!(
+        transport.rpc_calls()[0].2["params"]["expiry"],
+        1_794_556_800
+    );
+    let chain = client
+        .option_chain(&ChainFilter {
+            underlying: "HYPE".into(),
+            expiry: Some("2026-11-13".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(chain.options.len(), 3);
+    assert!(
+        chain
+            .options
+            .iter()
+            .all(|row| row.expiry_timestamp == 1_794_556_800)
+    );
+}
+
+#[tokio::test]
 async fn quote_surfaces_rysk_rejections() {
     let transport = FakeTransport::new().rpc(
         "request",
@@ -938,12 +996,16 @@ async fn positions_reject_malformed_addresses_before_any_request() {
     let transport = FakeTransport::new();
     let client = RyskClient::new(&transport);
 
-    let err = client
-        .positions("0x1234", &PositionFilter::default())
-        .await
-        .unwrap_err();
+    for address in ["0x1234", "sentinel-secret-pasted-in-wallet-field"] {
+        let err = client
+            .positions(address, &PositionFilter::default())
+            .await
+            .unwrap_err();
 
-    assert!(invalid_message(err).contains("20-byte hex address"));
+        let message = invalid_message(err);
+        assert!(message.contains("20-byte hex address"));
+        assert!(!message.contains(address), "{message}");
+    }
     assert!(transport.get_calls().is_empty());
     assert!(transport.rpc_calls().is_empty());
 }

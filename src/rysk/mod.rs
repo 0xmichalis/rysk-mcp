@@ -25,7 +25,9 @@ pub use model::{
     SettlementPrice, SettlementPrices, TokenAmount,
 };
 use transport::Transport;
-use units::{PRICE_DECIMALS, WAD, from_base_units, parse_utc_date, to_base_units, utc_date};
+use units::{
+    PRICE_DECIMALS, WAD, from_base_units, parse_utc_date, to_base_units, utc_date, utc_day,
+};
 
 /// Base URL of the public HTTP API.
 pub const API_URL: &str = "https://v12.rysk.finance";
@@ -180,7 +182,7 @@ impl<T: Transport> RyskClient<T> {
     /// strike, then calls before puts.
     pub async fn option_chain(&self, filter: &ChainFilter) -> Result<OptionChain, RyskError> {
         let expiry_day = match filter.expiry.as_deref() {
-            Some(date) => Some(parse_utc_date(date).ok_or_else(|| {
+            Some(date) => Some(parse_utc_date(date).map(utc_day).ok_or_else(|| {
                 RyskError::Invalid(format!("expiry must be YYYY-MM-DD, got {date:?}"))
             })?),
             None => None,
@@ -201,10 +203,7 @@ impl<T: Transport> RyskClient<T> {
         let mut options: Vec<OptionRow> = combinations
             .into_values()
             .filter(|c| filter.option_type.is_none_or(|t| t.is_put() == c.is_put))
-            .filter(|c| {
-                expiry_day
-                    .is_none_or(|day| c.expiration_timestamp.div_euclid(86_400) * 86_400 == day)
-            })
+            .filter(|c| expiry_day.is_none_or(|day| utc_day(c.expiration_timestamp) == day))
             .filter(|c| filter.min_strike.is_none_or(|m| c.strike >= m))
             .filter(|c| filter.max_strike.is_none_or(|m| c.strike <= m))
             .filter(|c| filter.min_apy.is_none_or(|m| c.apy >= m))
@@ -350,15 +349,32 @@ impl<T: Transport> RyskClient<T> {
 
     /// Run an RFQ and return the best quote with the symbol of its strike asset.
     async fn live_quote(&self, request: &QuoteRequest) -> Result<(Quote, String), RyskError> {
+        enum Expiry {
+            Timestamp(i64),
+            CalendarDay(i64),
+        }
+
         let strike = to_base_units(request.strike, PRICE_DECIMALS)
             .map_err(|e| RyskError::Invalid(format!("strike {e}")))?;
         let quantity = to_base_units(request.quantity, WAD)
             .map_err(|e| RyskError::Invalid(format!("quantity {e}")))?;
+        let date = request.expiry.trim();
+        let expiry = match date.parse::<i64>() {
+            Ok(timestamp) => Expiry::Timestamp(timestamp),
+            Err(_) => Expiry::CalendarDay(parse_utc_date(date).map(utc_day).ok_or_else(|| {
+                RyskError::Invalid(format!(
+                    "expiry must be YYYY-MM-DD or a unix timestamp, got {date:?}"
+                ))
+            })?),
+        };
         let (assets, products) = tokio::try_join!(self.fetch_assets(), self.fetch_products())?;
         let tokens = Tokens::new(&assets);
         let asset = resolve_asset(&assets, &request.asset, request.chain_id)?;
         let product = pick_product(&products, &tokens, asset, request)?;
-        let expiry = self.resolve_expiry(asset, &request.expiry).await?;
+        let expiry = match expiry {
+            Expiry::Timestamp(timestamp) => timestamp,
+            Expiry::CalendarDay(day) => self.resolve_expiry(asset, date, day).await?,
+        };
 
         let params = json!({
             "asset": asset.address.to_lowercase(),
@@ -407,12 +423,13 @@ impl<T: Transport> RyskClient<T> {
         address: &str,
         filter: &PositionFilter,
     ) -> Result<Vec<Position>, RyskError> {
-        let address = address.trim().to_lowercase();
-        if !is_address(&address) {
-            return Err(RyskError::Invalid(format!(
-                "address must be a 0x-prefixed 20-byte hex address, got {address:?}"
-            )));
+        let address = address.trim();
+        if !is_address(address) {
+            return Err(RyskError::Invalid(
+                "address must be a 0x-prefixed 20-byte hex address".to_string(),
+            ));
         }
+        let address = address.to_ascii_lowercase();
         let (assets, raw) = tokio::try_join!(
             self.fetch_assets(),
             self.rpc::<Vec<RawPosition>>("positions", json!({ "address": address }))
@@ -482,27 +499,22 @@ impl<T: Transport> RyskClient<T> {
         })
     }
 
-    /// Turn a `YYYY-MM-DD` expiry into the exact timestamp Rysk lists for that
-    /// day; pass a unix timestamp through.
-    async fn resolve_expiry(&self, asset: &RawAsset, expiry: &str) -> Result<i64, RyskError> {
-        let expiry = expiry.trim();
-        if let Ok(timestamp) = expiry.parse::<i64>() {
-            return Ok(timestamp);
-        }
-        let day = parse_utc_date(expiry).ok_or_else(|| {
-            RyskError::Invalid(format!(
-                "expiry must be YYYY-MM-DD or a unix timestamp, got {expiry:?}"
-            ))
-        })?;
+    /// Turn a validated UTC day into the exact timestamp Rysk lists for that day.
+    async fn resolve_expiry(
+        &self,
+        asset: &RawAsset,
+        expiry: &str,
+        day: i64,
+    ) -> Result<i64, RyskError> {
         let inventory: Inventory = self.get_json("/api/inventory").await?;
         let expiries = inventory
             .get(&asset.underlying)
-            .and_then(|u| u.expiries.clone())
+            .and_then(|u| u.expiries.as_deref())
             .unwrap_or_default();
         expiries
             .iter()
             .copied()
-            .find(|e| e.div_euclid(86_400) * 86_400 == day)
+            .find(|e| utc_day(*e) == day)
             .ok_or_else(|| {
                 let listed: Vec<String> = expiries.iter().map(|e| utc_date(*e)).collect();
                 RyskError::Invalid(format!(
@@ -813,7 +825,10 @@ fn list_or_none(items: &[String]) -> String {
 }
 
 fn is_address(text: &str) -> bool {
-    text.len() == 42 && text.starts_with("0x") && text[2..].bytes().all(|b| b.is_ascii_hexdigit())
+    let bytes = text.as_bytes();
+    bytes.len() == 42
+        && bytes[..2].eq_ignore_ascii_case(b"0x")
+        && bytes[2..].iter().all(u8::is_ascii_hexdigit)
 }
 
 fn round(value: f64, places: i32) -> f64 {
